@@ -1,6 +1,8 @@
 {
-  "name": "application-name",
+  "name": "prov",
   "version": "0.0.1",
+  "author": "Bran Sorem",
+  "description": "A web-connected ROV controlling platform",
   "private": true,
   "scripts": {
     "start": "node app"
@@ -10,5 +12,8 @@
     "serialport": "1.0.6",
     "socket.io": "0.9.13",
     "jade": "*"
+  },
+  "engines": {
+    "node": "0.8.18"
   }
 }

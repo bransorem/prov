@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title></title>
+    <link rel="stylesheet" src="stylesheets/style.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="http://cdnjs.cloudflare.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+    <script type="text/javascript">
+        var socket = io.connect('http://localhost');
+        var str = "";
+        socket.on("frame", function(data){
+            //socket.emit("frame_response", { error: false });
+            var context = document.getElementById("video").getContext('2d');
+            var blob = new Blob([new Uint8Array(data)], {'type': 'image\/jpeg'});
+            var src = window.URL.createObjectURL(blob);
+            var img = new Image();
+            img.src = src;
+            img.onload = function(){
+                context.drawImage(this, 0, 0);
+            }
+        });
+    </script>
+</head>
+<body>
+    <canvas id="video" width="800" height="600"></canvas>
+</body>
+</html>
