@@ -3,9 +3,6 @@
  * prov
  */
 
-var CAMERA = '/tmp/rov.camera.sock';  // socket to communicate over
-var CAMAPP = './camera';              // camera program
-
 var express = require('express')  // express
   , routes = require('./routes')  // express
   , http = require('http')  // express
@@ -31,96 +28,12 @@ app.configure(function(){
   app.use(express.static(path.join(__dirname, 'public')));
 });
 
+// Routing table
 app.get('/', routes.index);
 
 // Server port
 server.listen(3000);
 
-// array buffer for full frame
-var frame_size = 0;
-var frame_array = [];
-
-// Communictation with browser
-io.sockets.on('connection', function(iosocket){
-  iosocket.emit('message', 'init');  // kick off connection
-
-  // unbind current Unix domain socket [UDS] (if there is one)
-  fs.unlink(CAMERA, function(){
-
-    // create Unix domain socket (UDS)
-    var uds = net.createServer(function(socket){
-      // handle new client connections on the UDS
-      socket.on('connect', function(){ 
-        debug.log({ str: 'new client connection' }); 
-      });
-      // handle UDS data input
-      handleUDS({ uds: socket, io: iosocket });
-
-      iosocket.on('disconnect', function(){ 
-        cam.kill('SIGHUP'); 
-        debug.log({ str: 'Camera terminated.' }); 
-      });
-
-      // message from client to camera process
-      iosocket.on('message', function(mess){
-        test_image(iosocket);
-      });
-      // frame acknowledged by client
-      iosocket.on('frame_response', function(resp){
-        if (resp.error) { debug.log({ str: "Frame not received." }); return; }
-        debug.log({ str: "Frame acknowledged." });
-      });
-    });
-    uds.listen(CAMERA); // listen on the camera UDS
-
-    // start camera program
-    var cam = spawn(CAMAPP, []);
-  });
-});
-
-
-var handleUDS = function(config){
-  var uds = config.uds;
-  var io = config.io;
-  var frame_start = "camera::framestart";
-  var frame_end = "camera::frameend";
-  var frame_collect = false;
-  // handle data from the UDS
-  uds.on('data', function(d){
-    var message = d.toString();
-    if (message == frame_start) frame_collect = true;
-    else if (message == frame_end){
-      debug.log({ str: "image size: " + frame_size });
-      // create Node buffer for storing/sending full image
-      var frm = new Buffer(frame_size);
-      // copy frame array buffer data into Node buffer
-      for (var i=0, len=frame_array.length, pos=0; i<len; i++){
-        frame_array[i].copy(frm, pos);
-        pos += frame_array[i].length;
-      }
-      // send frame to client
-      io.volatile.emit('frame', frm);
-
-      // clear frame array buffer for next frame
-      frame_size = 0;
-      frame_array = [];
-    }
-    else if (frame_collect) {
-      // add frame chunck to frame array buffer
-      frame_array.push(d);
-      // keep track of the entire frame size
-      frame_size += d.length;
-    }
-    else {
-      frame_collect = false;
-    }
-  });
-}
-
-
-process.on('exit', function(){
-  debug.log({ str: 'ended' });
-});
 
 // What to do with debug info
 var debug = (function(){
@@ -128,6 +41,132 @@ var debug = (function(){
   self.log = function(obj){
     console.log(obj.str);
   }
-
   return self;
 })();
+
+// Configuration settings
+var CONFIG = (function(){
+    var init = function() {
+        return {
+            cameras: [{
+                socket:  '/tmp/rov.camera.sock'  // socket to communicate over
+              , process: './camera'  // process that runs OpenCV
+              , frame: {
+                  start: 'camera::framestart'
+                , end:   'camera::frameend'
+              }
+            }]
+        };
+    };
+    var instance;
+    return {
+        getInstance: function() {
+            if (!instance) instance = init();
+            return instance;
+        }
+    };
+})();
+
+// Camera frame
+var Frame = function(){
+    var self = {};
+
+    self.data = [];
+    self.size = 0;
+    self.collecting = false;
+
+    self.push = function(d) {
+        self.data.push(d);
+        // keep track of the entire frame size
+        self.size += d.length;
+    }
+
+    return self;
+};
+
+
+var Transport = function(config){
+    var self = {};
+    // array buffer for full frame
+    var frame = new Frame();
+    var camera = config.camera;
+
+    self.frame = frame;
+
+    self.io = config.io;
+    self.camera = camera;
+
+    self.handler = function(socket){
+        // handle new client connections on the UDS
+        socket.on('connect', function(){ 
+          debug.log({ str: 'new client connection' }); 
+        });
+        // handle UDS data input
+        socket.on('data', self.onData);
+
+        self.io.on('disconnect', function(){ 
+          self.child[0].kill('SIGHUP'); 
+          debug.log({ str: 'Camera terminated.' }); 
+        });
+
+        // frame acknowledged by client
+        self.io.on('frame_response', function(resp){
+          if (resp.error) { debug.log({ str: "Frame not received." }); return; }
+          debug.log({ str: "Frame acknowledged." });
+        });
+    };
+
+    self.onData = function(data){
+        var message = data.toString();
+        if (message == camera.frame.start) frame.collecting = true;
+        else if (message == camera.frame.end){
+            debug.log({ str: "image size: " + frame.size });
+            // create Node buffer for storing/sending full image
+            var frm = new Buffer(frame.size);
+            // copy frame array buffer data into Node buffer
+            for (var i=0, len=frame.data.length, pos=0; i<len; i++){
+                frame.data[i].copy(frm, pos);
+                pos += frame.data[i].length;
+            }
+            // send frame to client
+            self.io.volatile.emit('frame', frm);
+
+            // clear frame array buffer for next frame
+            frame.size = 0;
+            frame.data = [];
+        }
+        else if (frame.collecting) {
+            // add frame chunck to frame array buffer
+            frame.push(data);
+        }
+        else {
+            frame.collecting = false;
+        }
+    };
+
+    return self;
+};
+
+
+// Communictation with browser
+io.sockets.on('connection', function(iosocket){
+    iosocket.emit('message', 'init');  // kick off connection
+    var config = CONFIG.getInstance();
+    var uds = new Transport({ io: iosocket, camera: config.cameras[0] });
+
+    // unbind current Unix domain socket [UDS] (if there is one)
+    fs.unlink(uds.camera.socket, function(){
+        // create Unix domain socket (UDS)
+        uds.server = net.createServer(uds.handler);
+        // listen on the camera UDS
+        uds.server.listen(uds.camera.socket);
+        // start camera program
+        uds.child = [];
+        uds.child.push(spawn(uds.camera.process, []));
+    });
+});
+
+
+process.on('exit', function(){
+  debug.log({ str: 'ended' });
+});

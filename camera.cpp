@@ -25,7 +25,7 @@ int main(int argc, char* argv[]){
     if (!cap.isOpened()) return -1;
 
     // Prepare buffers
-    Mat frame;  // stores the image upon capture
+    Mat frame, mirror;  // stores the image upon capture
     std::vector<uchar> buff;  // convert to vector for UDS
     std::vector<int> compression; // compression settings
     compression.push_back(CV_IMWRITE_JPEG_QUALITY);  // use JPEG
@@ -42,8 +42,9 @@ int main(int argc, char* argv[]){
     while (1) {
       // capture frame from webcam
       cap >> frame;
+      cv::flip(frame, mirror, 1);
       // copy frame into vector container, and compress using JPEG
-      bool enc = imencode(".jpg", frame, buff, compression);
+      bool enc = imencode(".jpg", mirror, buff, compression);
       // send frame over UDS
       if (enc) {
           boost::asio::write(sock, boost::asio::buffer(start, start.length()));
