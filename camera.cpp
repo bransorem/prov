@@ -3,30 +3,21 @@
 #include "cv.h"       // opencv
 #include "highgui.h"  // opencv
 #include <vector>   // opencv
-#include <boost/asio.hpp> // unix domain socket
-#include <time.h>
+#include <uv.h> // unix domain socket
+#include <time.h>  // logging
 
 // Unix domain socket location
 #define SOCKET  "/tmp/rov.camera.sock"
+uv_loop_t *loop;
+uv_pipe_t pipe;
+
 // frame commands
 std::string start("camera::framestart");
 std::string end("camera::frameend");
 
-using boost::asio::local::stream_protocol;  // uds
 using namespace cv;  // opencv
 
 bool changed = false;
-
-void handler(const boost::system::error_code& err, std::size_t size) {
-  if (!err) {
-    if (size > 0) {
-      changed = (changed) ? false : true;
-    }
-  }
-  else {
-    throw boost::system::system_error(err);
-  }
-}
 
 std::string getTime() {
   time_t now = time(0);
@@ -42,68 +33,60 @@ std::vector<int> setCompression(int val) {
   std::vector<int> compression; // compression settings
   compression.push_back(CV_IMWRITE_JPEG_QUALITY);  // use JPEG
   compression.push_back(val); // quality
+  return compression;
 }
 
-int main(int argc, char* argv[]) {
+uv_buf_t alloc_buffer(uv_handle_t *handle, size_t suggested_size) {
+    return uv_buf_init((char*) calloc(suggested_size, 1), suggested_size);
+}
 
-  std::ofstream _log("log.txt");
-  
-  try {
-    // Establish camera connection
-    VideoCapture cap(0);
-    cap.set(CV_CAP_PROP_FRAME_WIDTH, 640);
-    cap.set(CV_CAP_PROP_FRAME_HEIGHT, 480);
-    cap.set(CV_CAP_PROP_FPS, 30);
-    if (!cap.isOpened()) return -1;
-
-    // Prepare buffers
-    Mat frame;  // stores the image upon capture
-    std::vector<uchar> buff;  // convert to vector for UDS
-    std::vector<int> compression = setCompression(80);
-
-    // Connect to unix domain socket
-    boost::asio::io_service io_service;
-    stream_protocol::socket sock(io_service);
-
-    sock.connect(stream_protocol::endpoint(SOCKET));
-    boost::array< uchar, 10240 > buf;
-    boost::array< char, 1024 > command;
-    // char* command;
-    boost::system::error_code error;
-
-    // run forever
-    while (1) {
-      // capture frame from webcam
-      cap >> frame;
-
-      // try to read command from socket
-      // sock.async_read_some(boost::asio::buffer(command, 10), handler);
-      boost::asio::async_read_until(sock, boost::asio::buffer(buf), ';', handler);
-
-      // std::string cmd(command.begin(), 10);
-
-      // _log << "test" << std::endl;
-
-      if (changed) cv::flip(frame, frame, 1);
-      cv::cvtColor(frame, frame, CV_BGR2GRAY);
-
-      // copy frame into vector container, and compress using JPEG
-      bool enc = imencode(".jpg", frame, buff, compression);
-      // send frame over UDS
-      if (enc) {
-          boost::asio::write(sock, boost::asio::buffer(start, start.length()));
-          usleep(500); // add some delay between messages
-          boost::asio::write(sock, boost::asio::buffer(buff));
-          usleep(500); // add some delay between messages
-          boost::asio::write(sock, boost::asio::buffer(end, end.length()));
-        }
+void echo_read(uv_stream_t *client, ssize_t nread, uv_buf_t buf) {
+    if (nread == -1) {
+        // if (uv_last_error(loop).code != UV_EOF)
+        //     fprintf(stderr, "Read error %s\n", uv_err_name(uv_last_error(loop)));
+        uv_close((uv_handle_t*) client, NULL);
+        return;
     }
-  }
-  catch (std::exception& e) {
-    _log << getTime() << "Exception: " << e.what() << "\n";
-  }
 
-  _log.close();
+    uv_write_t *req = (uv_write_t *) malloc(sizeof(uv_write_t));
+    req->data = (void*) buf.base;
+    buf.len = nread;
+    
+    char *cmd;
+    cmd = buf.base;
+    string c = cmd;
+    if (c == "flip;") changed = true;
+}
 
+void on_connect(uv_pipe_t *q, ssize_t nread, uv_buf_t buf, uv_handle_type pending) {
+  if (pending == UV_UNKNOWN_HANDLE) return;
+
+  uv_pipe_t *client = (uv_pipe_t*) malloc(sizeof(uv_pipe_t));
+  uv_pipe_init(loop, client, 0);
+  if (uv_accept((uv_stream_t*) q, (uv_stream_t*) client) == 0) {
+    uv_read_start((uv_stream_t*) client, alloc_buffer, echo_read);
+  }
+  else {
+    uv_close((uv_handle_t*) client, NULL);
+  }
+}
+
+
+
+
+
+
+int main(int argc, char* argv[]) {
+  // std::ofstream _log("log.txt");
+  loop = uv_default_loop();
+  uv_pipe_t *pipe;
+  uv_pipe_init(loop, pipe, 0);
+  uv_connect_t connect;
+
+  uv_pipe_connect(&connect, pipe, SOCKET, on_connect);
+
+  uv_pipe_start(pipe);
+
+  uv_run(loop, UV_RUN_DEFAULT);
   return 0;
 }

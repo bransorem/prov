@@ -1,5 +1,5 @@
 // What to do with debug info
-var Debug = (function(){
+var Log = (function(){
   var self = {};
   self.log = function(obj){
     console.log(obj.str);
@@ -7,4 +7,4 @@ var Debug = (function(){
   return self;
 })();
 
-module.exports = Debug;
+module.exports = Log;
